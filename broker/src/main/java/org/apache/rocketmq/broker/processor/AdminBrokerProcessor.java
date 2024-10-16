@@ -542,7 +542,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                     break;
                 }
 
-                if(i == minOffsetInQueue){
+                if (i == minOffsetInQueue) {
                     earliestKcCqTime = kvCqUnit.getObject2();
                 }
                 if (!checkCqUnitEqual(kvCqUnit.getObject1(), fileCqUnit.getObject1())) {
