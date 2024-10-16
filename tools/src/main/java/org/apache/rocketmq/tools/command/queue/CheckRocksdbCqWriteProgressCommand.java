@@ -82,9 +82,10 @@ public class CheckRocksdbCqWriteProgressCommand implements SubCommand {
                 String brokerAddr = brokerData.getBrokerAddrs().get(0L);
                 CheckRocksdbCqWriteProgressResponseBody body = defaultMQAdminExt.checkRocksdbCqWriteProgress(brokerAddr, topic);
                 if (StringUtils.isNotBlank(topic)) {
-                    System.out.print(body.getDiffResult());
+                    System.out.print("checkStatus(0->error, 1->checkSuccess,  2->checkFalse): " + body.getCheckStatus() + " \n " + body.getDiffResult());
                 } else {
-                    System.out.print(brokerName + " | " + brokerAddr + " | \n" + body.getDiffResult());
+                    System.out.print("checkStatus(0->error, 1->checkSuccess,  2->checkFalse): " + body.getCheckStatus() + " \n " +
+                        brokerName + " | " + brokerAddr + " | \n" + body.getDiffResult());
                 }
             }
 

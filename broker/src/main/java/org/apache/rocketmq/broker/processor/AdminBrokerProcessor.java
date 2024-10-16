@@ -466,6 +466,10 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         return response;
     }
 
+    /**
+     * diffResult: string
+     * checkStatus: int 0->error 1->checkSuccess  2->checkFalse
+     */
     private RemotingCommand checkRocksdbCqWriteProgress(ChannelHandlerContext ctx, RemotingCommand request) throws RemotingCommandException {
         CheckRocksdbCqWriteProgressRequestHeader requestHeader = request.decodeCommandCustomHeader(CheckRocksdbCqWriteProgressRequestHeader.class);
         String requestTopic = requestHeader.getTopic();
@@ -479,8 +483,11 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             defaultMessageStore = (DefaultMessageStore) messageStore;
         }
         RocksDBMessageStore rocksDBMessageStore = defaultMessageStore.getRocksDBMessageStore();
+        HashMap<String, String> resultMap = new HashMap<>();
         if (!defaultMessageStore.getMessageStoreConfig().isRocksdbCQDoubleWriteEnable()) {
-            response.setBody(JSON.toJSONBytes(ImmutableMap.of("diffResult", "rocksdbCQWriteEnable is false, checkRocksdbCqWriteProgressCommand is invalid")));
+            resultMap.put("diffResult", "rocksdbCQWriteEnable is false, checkRocksdbCqWriteProgressCommand is invalid");
+            resultMap.put("checkStatus", "0");
+            response.setBody(JSON.toJSONBytes(resultMap));
             return response;
         }
 
@@ -488,25 +495,33 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         StringBuilder diffResult = new StringBuilder();
         try {
             if (StringUtils.isNotBlank(requestTopic)) {
-                processConsumeQueuesForTopic(cqTable.get(requestTopic), requestTopic, rocksDBMessageStore, diffResult,false);
-                response.setBody(JSON.toJSONBytes(ImmutableMap.of("diffResult", diffResult.toString())));
+                boolean checkResult = processConsumeQueuesForTopic(cqTable.get(requestTopic), requestTopic, rocksDBMessageStore, diffResult, false);
+                resultMap.put("diffResult", diffResult.toString());
+                resultMap.put("checkStatus", checkResult ? "1" : "2");
+                response.setBody(JSON.toJSONBytes(resultMap));
                 return response;
             }
+            boolean checkResult = true;
             for (Map.Entry<String, ConcurrentMap<Integer, ConsumeQueueInterface>> topicEntry : cqTable.entrySet()) {
                 String topic = topicEntry.getKey();
-                processConsumeQueuesForTopic(topicEntry.getValue(), topic, rocksDBMessageStore, diffResult,true);
+                checkResult = processConsumeQueuesForTopic(topicEntry.getValue(), topic, rocksDBMessageStore, diffResult, true);
             }
             diffResult.append("check all topic successful, size:").append(cqTable.size());
-            response.setBody(JSON.toJSONBytes(ImmutableMap.of("diffResult", diffResult.toString())));
+            resultMap.put("diffResult", diffResult.toString());
+            resultMap.put("checkStatus", checkResult ? "1" : "2");
+            response.setBody(JSON.toJSONBytes(resultMap));
 
         } catch (Exception e) {
             LOGGER.error("CheckRocksdbCqWriteProgressCommand error", e);
-            response.setBody(JSON.toJSONBytes(ImmutableMap.of("diffResult", e.getMessage())));
+            resultMap.put("diffResult", e.getMessage());
+            resultMap.put("checkStatus", "0");
+            response.setBody(JSON.toJSONBytes(resultMap));
         }
         return response;
     }
 
-    private void processConsumeQueuesForTopic(ConcurrentMap<Integer, ConsumeQueueInterface> queueMap, String topic, RocksDBMessageStore rocksDBMessageStore, StringBuilder diffResult, boolean checkAll) {
+    private boolean processConsumeQueuesForTopic(ConcurrentMap<Integer, ConsumeQueueInterface> queueMap, String topic, RocksDBMessageStore rocksDBMessageStore, StringBuilder diffResult, boolean checkAll) {
+        long earliestKcCqTime = 0;
         for (Map.Entry<Integer, ConsumeQueueInterface> queueEntry : queueMap.entrySet()) {
             Integer queueId = queueEntry.getKey();
             ConsumeQueueInterface jsonCq = queueEntry.getValue();
@@ -524,17 +539,23 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                 if (fileCqUnit == null || kvCqUnit == null) {
                     diffResult.append(String.format("[topic: %s, queue: %s, offset: %s] \n kv   : %s  \n file : %s  \n",
                         topic, queueId, i, kvCqUnit != null ? kvCqUnit.getObject1() : "null", fileCqUnit != null ? fileCqUnit.getObject1() : "null"));
-                    return;
+                    break;
+                }
+
+                if(i == minOffsetInQueue){
+                    earliestKcCqTime = kvCqUnit.getObject2();
                 }
                 if (!checkCqUnitEqual(kvCqUnit.getObject1(), fileCqUnit.getObject1())) {
-                    String diffInfo = String.format("[topic:%s, queue: %s offset: %s] \n file : %s  \n  kv : %s \n",
+                    String diffInfo = String.format("[topic: %s, queue: %s, offset: %s] \n file : %s  \n  kv : %s \n",
                         topic, queueId, i, kvCqUnit.getObject1(), fileCqUnit.getObject1());
                     LOGGER.error(diffInfo);
                     diffResult.append(diffInfo).append(System.lineSeparator());
-                    return;
+                    return false;
                 }
             }
         }
+        // The default is 30 days for double write
+        return earliestKcCqTime > 60 * 60 * 24 * 30;
     }
     @Override
     public boolean rejectRequest() {
