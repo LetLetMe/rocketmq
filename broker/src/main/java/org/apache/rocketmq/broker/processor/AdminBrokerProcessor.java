@@ -494,7 +494,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         StringBuilder diffResult = new StringBuilder();
         try {
             if (StringUtils.isNotBlank(requestTopic)) {
-                boolean checkResult = processConsumeQueuesForTopic(cqTable.get(requestTopic), requestTopic, rocksDBMessageStore, diffResult, false);
+                boolean checkResult = processConsumeQueuesForTopic(cqTable.get(requestTopic), requestTopic, rocksDBMessageStore, diffResult, false, requestHeader.getCheckStoreTime());
                 resultMap.put("diffResult", diffResult.toString());
                 resultMap.put("checkStatus", checkResult ? "1" : "2");
                 response.setBody(JSON.toJSONBytes(resultMap));
@@ -503,7 +503,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             boolean checkResult = true;
             for (Map.Entry<String, ConcurrentMap<Integer, ConsumeQueueInterface>> topicEntry : cqTable.entrySet()) {
                 String topic = topicEntry.getKey();
-                checkResult = processConsumeQueuesForTopic(topicEntry.getValue(), topic, rocksDBMessageStore, diffResult, true);
+                checkResult = processConsumeQueuesForTopic(topicEntry.getValue(), topic, rocksDBMessageStore, diffResult, true, requestHeader.getCheckStoreTime());
             }
             diffResult.append("check all topic successful, size:").append(cqTable.size());
             resultMap.put("diffResult", diffResult.toString());
@@ -519,8 +519,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         return response;
     }
 
-    private boolean processConsumeQueuesForTopic(ConcurrentMap<Integer, ConsumeQueueInterface> queueMap, String topic, RocksDBMessageStore rocksDBMessageStore, StringBuilder diffResult, boolean checkAll) {
-        long earliestKcCqTime = 0;
+    private boolean processConsumeQueuesForTopic(ConcurrentMap<Integer, ConsumeQueueInterface> queueMap, String topic, RocksDBMessageStore rocksDBMessageStore, StringBuilder diffResult, boolean checkAll, long checkStoreTime) {
         for (Map.Entry<Integer, ConsumeQueueInterface> queueEntry : queueMap.entrySet()) {
             Integer queueId = queueEntry.getKey();
             ConsumeQueueInterface jsonCq = queueEntry.getValue();
@@ -532,6 +531,15 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             }
             long maxFileOffsetInQueue = jsonCq.getMaxOffsetInQueue();
             long minOffsetInQueue = kvCq.getMinOffsetInQueue();
+
+            // The latest message is earlier than the check time
+            Pair<CqUnit, Long> fileLatestCq = jsonCq.getCqUnitAndStoreTime(maxFileOffsetInQueue);
+            if (fileLatestCq != null) {
+                if (fileLatestCq.getObject2() < System.currentTimeMillis() - checkStoreTime) {
+                    continue;
+                }
+            }
+
             for (long i = minOffsetInQueue; i < maxFileOffsetInQueue; i++) {
                 Pair<CqUnit, Long> fileCqUnit = jsonCq.getCqUnitAndStoreTime(i);
                 Pair<CqUnit, Long> kvCqUnit = kvCq.getCqUnitAndStoreTime(i);
@@ -540,9 +548,9 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                         topic, queueId, i, kvCqUnit != null ? kvCqUnit.getObject1() : "null", fileCqUnit != null ? fileCqUnit.getObject1() : "null"));
                     break;
                 }
-
-                if (i == minOffsetInQueue) {
-                    earliestKcCqTime = kvCqUnit.getObject2();
+                Long earliestKcTime = kvCqUnit.getObject2();
+                if (earliestKcTime < System.currentTimeMillis() - checkStoreTime) {
+                    continue;
                 }
                 if (!checkCqUnitEqual(kvCqUnit.getObject1(), fileCqUnit.getObject1())) {
                     String diffInfo = String.format("[topic: %s, queue: %s, offset: %s] \n file : %s  \n  kv : %s \n",
@@ -553,8 +561,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                 }
             }
         }
-        // The default is 30 days for double write
-        return earliestKcCqTime > 60 * 60 * 24 * 30;
+        return true;
     }
     @Override
     public boolean rejectRequest() {
