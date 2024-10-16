@@ -213,6 +213,7 @@ import org.apache.rocketmq.store.PutMessageResult;
 import org.apache.rocketmq.store.PutMessageStatus;
 import org.apache.rocketmq.store.RocksDBMessageStore;
 import org.apache.rocketmq.store.SelectMappedBufferResult;
+import org.apache.rocketmq.store.StoreType;
 import org.apache.rocketmq.store.config.BrokerRole;
 import org.apache.rocketmq.store.plugin.AbstractPluginMessageStore;
 import org.apache.rocketmq.store.queue.ConsumeQueueInterface;
@@ -483,6 +484,14 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         }
         RocksDBMessageStore rocksDBMessageStore = defaultMessageStore.getRocksDBMessageStore();
         HashMap<String, String> resultMap = new HashMap<>();
+
+        if (defaultMessageStore.getMessageStoreConfig().getStoreType().equals(StoreType.DEFAULT_ROCKSDB.getStoreType())) {
+            resultMap.put("diffResult", "storeType is DEFAULT_ROCKSDB, no need check");
+            resultMap.put("checkStatus", "0");
+            response.setBody(JSON.toJSONBytes(resultMap));
+            return response;
+        }
+
         if (!defaultMessageStore.getMessageStoreConfig().isRocksdbCQDoubleWriteEnable()) {
             resultMap.put("diffResult", "rocksdbCQWriteEnable is false, checkRocksdbCqWriteProgressCommand is invalid");
             resultMap.put("checkStatus", "1");
@@ -525,7 +534,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             ConsumeQueueInterface jsonCq = queueEntry.getValue();
             ConsumeQueueInterface kvCq = rocksDBMessageStore.getConsumeQueue(topic, queueId);
             if (!checkAll) {
-                String format = String.format("\n[topic: %s, queue:  %s] \n  kvEarliest : %s |  kvLatest : %s \n fileEarliest: %s | fileEarliest: %s ",
+                String format = String.format("[topic: %s, queue:  %s] \n  kvEarliest : %s |  kvLatest : %s \n fileEarliest: %s | fileEarliest: %s ",
                     topic, queueId, kvCq.getEarliestUnit(), kvCq.getLatestUnit(), jsonCq.getEarliestUnit(), jsonCq.getLatestUnit());
                 diffResult.append(format).append("\n");
             }
