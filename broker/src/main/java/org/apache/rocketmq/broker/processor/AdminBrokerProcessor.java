@@ -485,7 +485,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         HashMap<String, String> resultMap = new HashMap<>();
         if (!defaultMessageStore.getMessageStoreConfig().isRocksdbCQDoubleWriteEnable()) {
             resultMap.put("diffResult", "rocksdbCQWriteEnable is false, checkRocksdbCqWriteProgressCommand is invalid");
-            resultMap.put("checkStatus", "2");
+            resultMap.put("checkStatus", "1");
             response.setBody(JSON.toJSONBytes(resultMap));
             return response;
         }
@@ -512,7 +512,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
 
         } catch (Exception e) {
             LOGGER.error("CheckRocksdbCqWriteProgressCommand error", e);
-            resultMap.put("diffResult", e.getMessage());
+            resultMap.put("diffResult", e.getMessage() + Arrays.toString(e.getStackTrace()));
             resultMap.put("checkStatus", "2");
             response.setBody(JSON.toJSONBytes(resultMap));
         }
@@ -548,8 +548,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                         topic, queueId, i, kvCqUnit != null ? kvCqUnit.getObject1() : "null", fileCqUnit != null ? fileCqUnit.getObject1() : "null"));
                     break;
                 }
-                Long earliestKcTime = kvCqUnit.getObject2();
-                if (earliestKcTime < checkStoreTime) {
+                if (kvCqUnit.getObject2() < checkStoreTime) {
                     continue;
                 }
                 if (!checkCqUnitEqual(kvCqUnit.getObject1(), fileCqUnit.getObject1())) {
