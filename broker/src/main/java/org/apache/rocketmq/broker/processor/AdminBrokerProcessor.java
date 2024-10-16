@@ -467,7 +467,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
 
     /**
      * diffResult: string
-     * checkStatus: int 0->error 1->checkSuccess  2->checkFalse
+     * checkStatus: int 0->ready, 1->notReady, 2->error
      */
     private RemotingCommand checkRocksdbCqWriteProgress(ChannelHandlerContext ctx, RemotingCommand request) throws RemotingCommandException {
         CheckRocksdbCqWriteProgressRequestHeader requestHeader = request.decodeCommandCustomHeader(CheckRocksdbCqWriteProgressRequestHeader.class);
@@ -485,7 +485,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
         HashMap<String, String> resultMap = new HashMap<>();
         if (!defaultMessageStore.getMessageStoreConfig().isRocksdbCQDoubleWriteEnable()) {
             resultMap.put("diffResult", "rocksdbCQWriteEnable is false, checkRocksdbCqWriteProgressCommand is invalid");
-            resultMap.put("checkStatus", "0");
+            resultMap.put("checkStatus", "2");
             response.setBody(JSON.toJSONBytes(resultMap));
             return response;
         }
@@ -496,7 +496,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             if (StringUtils.isNotBlank(requestTopic)) {
                 boolean checkResult = processConsumeQueuesForTopic(cqTable.get(requestTopic), requestTopic, rocksDBMessageStore, diffResult, false, requestHeader.getCheckStoreTime());
                 resultMap.put("diffResult", diffResult.toString());
-                resultMap.put("checkStatus", checkResult ? "1" : "2");
+                resultMap.put("checkStatus", checkResult ? "0" : "1");
                 response.setBody(JSON.toJSONBytes(resultMap));
                 return response;
             }
@@ -507,13 +507,13 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             }
             diffResult.append("check all topic successful, size:").append(cqTable.size());
             resultMap.put("diffResult", diffResult.toString());
-            resultMap.put("checkStatus", checkResult ? "1" : "2");
+            resultMap.put("checkStatus", checkResult ? "0" : "1");
             response.setBody(JSON.toJSONBytes(resultMap));
 
         } catch (Exception e) {
             LOGGER.error("CheckRocksdbCqWriteProgressCommand error", e);
             resultMap.put("diffResult", e.getMessage());
-            resultMap.put("checkStatus", "0");
+            resultMap.put("checkStatus", "2");
             response.setBody(JSON.toJSONBytes(resultMap));
         }
         return response;
@@ -535,7 +535,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
             // The latest message is earlier than the check time
             Pair<CqUnit, Long> fileLatestCq = jsonCq.getCqUnitAndStoreTime(maxFileOffsetInQueue);
             if (fileLatestCq != null) {
-                if (fileLatestCq.getObject2() < System.currentTimeMillis() - checkStoreTime) {
+                if (fileLatestCq.getObject2() < checkStoreTime) {
                     continue;
                 }
             }
@@ -549,7 +549,7 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                     break;
                 }
                 Long earliestKcTime = kvCqUnit.getObject2();
-                if (earliestKcTime < System.currentTimeMillis() - checkStoreTime) {
+                if (earliestKcTime < checkStoreTime) {
                     continue;
                 }
                 if (!checkCqUnitEqual(kvCqUnit.getObject1(), fileCqUnit.getObject1())) {

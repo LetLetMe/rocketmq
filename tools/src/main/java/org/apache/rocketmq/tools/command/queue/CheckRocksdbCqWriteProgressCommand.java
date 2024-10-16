@@ -71,7 +71,7 @@ public class CheckRocksdbCqWriteProgressCommand implements SubCommand {
         String clusterName = commandLine.hasOption('c') ? commandLine.getOptionValue('c').trim() : "";
         String topic = commandLine.hasOption('t') ? commandLine.getOptionValue('t').trim() : "";
         // The default check is 30 days
-        long checkStoreTime = commandLine.hasOption("checkFrom") ? Long.parseLong(commandLine.getOptionValue("checkFrom").trim()) : 24 * 60 * 60 * 1000 * 30L;
+        long checkStoreTime = commandLine.hasOption("checkFrom") ? Long.parseLong(commandLine.getOptionValue("checkFrom").trim()) : System.currentTimeMillis() - 24 * 60 * 60 * 1000 * 30L;
 
         try {
             defaultMQAdminExt.start();
@@ -88,10 +88,10 @@ public class CheckRocksdbCqWriteProgressCommand implements SubCommand {
                 String brokerAddr = brokerData.getBrokerAddrs().get(0L);
                 CheckRocksdbCqWriteProgressResponseBody body = defaultMQAdminExt.checkRocksdbCqWriteProgress(brokerAddr, topic, checkStoreTime);
                 if (StringUtils.isNotBlank(topic)) {
-                    System.out.print("checkStatus(0 -> error, 1 -> checkSuccess,  2 -> checkFalse): " + body.getCheckStatus() + " \n " + body.getDiffResult());
+                    System.out.print("checkStatus(0 -> ready, 1 -> notReady, 2 -> error): " + body.getCheckStatus() + " \n " + body.getDiffResult() + "\n");
                 } else {
-                    System.out.print("checkStatus(0 -> error, 1 -> checkSuccess,  2 -> checkFalse): " + body.getCheckStatus() + " \n " +
-                        brokerName + " \n" + body.getDiffResult());
+                    System.out.print("checkStatus(0 -> ready, 1 -> notReady, 2 -> error): " + body.getCheckStatus() + " \n " +
+                        brokerName + " \n" + body.getDiffResult() + "\n");
                 }
             }
 
