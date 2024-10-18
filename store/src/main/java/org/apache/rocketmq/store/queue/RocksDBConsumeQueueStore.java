@@ -33,6 +33,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.BoundaryType;
 import org.apache.rocketmq.common.Pair;
 import org.apache.rocketmq.common.ThreadFactoryImpl;
+import org.apache.rocketmq.common.TopicConfig;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.message.MessageExtBrokerInner;
 import org.apache.rocketmq.common.utils.DataConverter;
@@ -289,7 +290,28 @@ public class RocksDBConsumeQueueStore extends AbstractConsumeQueueStore {
      */
     @Override
     public void recoverOffsetTable(long minPhyOffset) {
+        try {
+            ConcurrentMap<String, Long> cqOffsetTable = new ConcurrentHashMap<>(1024);
+            ConcurrentMap<String, TopicConfig> configs = this.messageStore.getTopicConfigs();
+            for (TopicConfig topicConfig : configs.values()) {
+                for (int queueId = 0; queueId < topicConfig.getWriteQueueNums(); queueId++) {
+                    String key = topicConfig.getTopicName() + "-" + queueId;
+                    Long maxOffset = this.rocksDBConsumeQueueOffsetTable.getMaxCqOffset(topicConfig.getTopicName(), queueId);
+                    if (maxOffset != null) {
+                        cqOffsetTable.put(key, maxOffset);
+                    }
+                }
+            }
+            this.setTopicQueueTable(cqOffsetTable);
+        } catch (RocksDBException e) {
+            log.error("recoverOffsetTable Failed.", e);
+        }
+    }
 
+    @Override
+    public void setTopicQueueTable(ConcurrentMap<String, Long> topicQueueTable) {
+        this.queueOffsetOperator.setTopicQueueTable(topicQueueTable);
+        this.queueOffsetOperator.setLmqTopicQueueTable(topicQueueTable);
     }
 
     @Override

@@ -74,10 +74,6 @@ public class RocksDBMessageStore extends DefaultMessageStore {
      * because we can recover topic queue table from rocksdb when we need to use it.
      * @see RocksDBConsumeQueue#assignQueueOffset
      */
-    @Override
-    public void recoverTopicQueueTable() {
-        this.consumeQueueStore.setTopicQueueTable(new ConcurrentHashMap<>());
-    }
 
     @Override
     public void finishCommitLogDispatch() {
