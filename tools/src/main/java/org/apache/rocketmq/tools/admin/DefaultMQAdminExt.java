@@ -757,6 +757,12 @@ public class DefaultMQAdminExt extends ClientConfig implements MQAdminExt {
     }
 
     @Override
+    public org.apache.rocketmq.common.CQOffsetRouteInfo checkCQOffsetRoute(String brokerAddr, String topic)
+        throws InterruptedException, RemotingTimeoutException, RemotingSendRequestException, RemotingConnectException, MQClientException {
+        return this.defaultMQAdminExtImpl.checkCQOffsetRoute(brokerAddr, topic);
+    }
+
+    @Override
     public void exportRocksDBConfigToJson(String brokerAddr,
         List<ExportRocksDBConfigToJsonRequestHeader.ConfigType> configType)
         throws InterruptedException, RemotingTimeoutException, RemotingSendRequestException, RemotingConnectException, MQClientException {

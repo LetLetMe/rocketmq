@@ -17,6 +17,7 @@
 package org.apache.rocketmq.store.config;
 
 import java.io.File;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.annotation.ImportantField;
 import org.apache.rocketmq.store.ConsumeQueue;
 import org.apache.rocketmq.store.StoreType;
@@ -484,6 +485,19 @@ public class MessageStoreConfig {
     private String combineAssignOffsetCQType = StoreType.DEFAULT.getStoreType();
     private boolean combineCQEnableCheckSelf = false;
     private int combineCQMaxExtraSearchCommitLogFiles = 3;
+    /**
+     * If true, new messages will only be written to RocksDB CQ, not File CQ.
+     * Reading will automatically route based on offset: read from File CQ for old offsets, from RocksDB CQ for new offsets.
+     */
+    private boolean combineCQWriteOnlyRocksDB = false;
+
+    /**
+     * Topic grayscale list for combineCQWriteOnlyRocksDB feature.
+     * Comma-separated topic patterns supporting wildcards (* and ?).
+     * Examples: "test*,prod-*" or "topic1,topic2,test*"
+     * If empty, all topics will be affected when combineCQWriteOnlyRocksDB is enabled.
+     */
+    private String combineCQWriteOnlyRocksDBTopics = "";
 
     /**
      * If ConsumeQueueStore is RocksDB based, this option is to configure bottom-most tier compression type.
@@ -2109,6 +2123,41 @@ public class MessageStoreConfig {
 
     public void setCombineCQMaxExtraSearchCommitLogFiles(int combineCQMaxExtraSearchCommitLogFiles) {
         this.combineCQMaxExtraSearchCommitLogFiles = combineCQMaxExtraSearchCommitLogFiles;
+    }
+
+    public boolean isCombineCQWriteOnlyRocksDB() {
+        return combineCQWriteOnlyRocksDB;
+    }
+
+    public void setCombineCQWriteOnlyRocksDB(boolean combineCQWriteOnlyRocksDB) {
+        this.combineCQWriteOnlyRocksDB = combineCQWriteOnlyRocksDB;
+    }
+
+    public String getCombineCQWriteOnlyRocksDBTopics() {
+        return combineCQWriteOnlyRocksDBTopics;
+    }
+
+    public void setCombineCQWriteOnlyRocksDBTopics(String combineCQWriteOnlyRocksDBTopics) {
+        this.combineCQWriteOnlyRocksDBTopics = combineCQWriteOnlyRocksDBTopics;
+    }
+
+    /**
+     * Check if a topic is in the grayscale list for combineCQWriteOnlyRocksDB feature.
+     *
+     * @param topic topic name to check
+     * @return true if topic matches grayscale patterns or grayscale list is empty, false otherwise
+     */
+    public boolean isTopicInGrayscaleList(String topic) {
+        if (!combineCQWriteOnlyRocksDB) {
+            return false;
+        }
+        if (StringUtils.isBlank(combineCQWriteOnlyRocksDBTopics)) {
+            // If grayscale list is empty, all topics are in grayscale when feature is enabled
+            return true;
+        }
+        org.apache.rocketmq.store.util.TopicGrayscaleMatcher matcher =
+            new org.apache.rocketmq.store.util.TopicGrayscaleMatcher(combineCQWriteOnlyRocksDBTopics);
+        return matcher.matches(topic);
     }
 
     public boolean isEnableLogConsumeQueueRepeatedlyBuildWhenRecover() {

@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.BoundaryType;
 import org.apache.rocketmq.common.CheckRocksdbCqWriteResult;
+import org.apache.rocketmq.common.CQOffsetRouteInfo;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.common.Pair;
@@ -318,8 +319,17 @@ public class CombineConsumeQueueStore implements ConsumeQueueStoreInterface {
 
     @Override
     public void putMessagePositionInfoWrapper(DispatchRequest request) throws RocksDBException {
-        for (AbstractConsumeQueueStore store : innerConsumeQueueStoreList) {
-            store.putMessagePositionInfoWrapper(request);
+        // Check if topic is in grayscale list
+        boolean isGrayscaleTopic = messageStoreConfig.isTopicInGrayscaleList(request.getTopic());
+        
+        // If combineCQWriteOnlyRocksDB is enabled and topic is in grayscale list, only write to RocksDB CQ
+        if (isGrayscaleTopic && rocksDBConsumeQueueStore != null) {
+            rocksDBConsumeQueueStore.putMessagePositionInfoWrapper(request);
+        } else {
+            // Write to all stores (default behavior)
+            for (AbstractConsumeQueueStore store : innerConsumeQueueStoreList) {
+                store.putMessagePositionInfoWrapper(request);
+            }
         }
     }
 
@@ -357,22 +367,136 @@ public class CombineConsumeQueueStore implements ConsumeQueueStoreInterface {
 
     @Override
     public Long getMaxOffset(String topic, int queueId) throws ConsumeQueueException {
+        // Check if topic is in grayscale list
+        boolean isGrayscaleTopic = messageStoreConfig.isTopicInGrayscaleList(topic);
+        
+        // When topic is in grayscale list, maxOffset should come from RocksDB CQ
+        if (isGrayscaleTopic && rocksDBConsumeQueueStore != null) {
+            try {
+                return rocksDBConsumeQueueStore.getMaxOffset(topic, queueId);
+            } catch (ConsumeQueueException e) {
+                log.warn("Failed to get max offset from RocksDB CQ, fallback to currentReadStore, topic={}, queueId={}", topic, queueId, e);
+            }
+        }
         return currentReadStore.getMaxOffset(topic, queueId);
     }
 
     @Override
     public long getMinOffsetInQueue(String topic, int queueId) throws RocksDBException {
+        // Check if topic is in grayscale list
+        boolean isGrayscaleTopic = messageStoreConfig.isTopicInGrayscaleList(topic);
+        
+        // When topic is in grayscale list, minOffset should come from File CQ (if exists)
+        if (isGrayscaleTopic && consumeQueueStore != null) {
+            try {
+                long fileCQMinOffset = consumeQueueStore.getMinOffsetInQueue(topic, queueId);
+                // If File CQ has data, use its minOffset; otherwise use RocksDB CQ minOffset
+                if (fileCQMinOffset >= 0) {
+                    return fileCQMinOffset;
+                }
+            } catch (Exception e) {
+                log.warn("Failed to get min offset from File CQ, fallback to RocksDB CQ, topic={}, queueId={}", topic, queueId, e);
+            }
+        }
         return currentReadStore.getMinOffsetInQueue(topic, queueId);
     }
 
     @Override
     public long getOffsetInQueueByTime(String topic, int queueId, long timestamp,
         BoundaryType boundaryType) throws RocksDBException {
+        // Check if topic is in grayscale list
+        boolean isGrayscaleTopic = messageStoreConfig.isTopicInGrayscaleList(topic);
+        
+        // If topic is not in grayscale list, use currentReadStore
+        if (!isGrayscaleTopic) {
+            return currentReadStore.getOffsetInQueueByTime(topic, queueId, timestamp, boundaryType);
+        }
+
+        // For grayscale topics, need to check both File CQ and KV CQ
+        if (consumeQueueStore != null && rocksDBConsumeQueueStore != null) {
+            try {
+                // Try to get File CQ max offset as the cutoff point
+                long fileCQMaxOffset = consumeQueueStore.getMaxOffset(topic, queueId);
+                
+                // Try File CQ first
+                long fileCQOffset = consumeQueueStore.getOffsetInQueueByTime(topic, queueId, timestamp, boundaryType);
+                if (fileCQOffset >= 0 && fileCQOffset < fileCQMaxOffset) {
+                    // Found in File CQ range, return File CQ result
+                    return fileCQOffset;
+                }
+                
+                // Try KV CQ
+                long kvCQOffset = rocksDBConsumeQueueStore.getOffsetInQueueByTime(topic, queueId, timestamp, boundaryType);
+                if (kvCQOffset >= 0) {
+                    return kvCQOffset;
+                }
+                
+                // If File CQ found something but out of range, still return it
+                if (fileCQOffset >= 0) {
+                    return fileCQOffset;
+                }
+            } catch (Exception e) {
+                log.warn("Failed to get offset by time from both stores, topic={}, queueId={}, timestamp={}, fallback to currentReadStore",
+                    topic, queueId, timestamp, e);
+            }
+        }
+        
         return currentReadStore.getOffsetInQueueByTime(topic, queueId, timestamp, boundaryType);
+    }
+
+    /**
+     * Select the appropriate store based on offset routing when combineCQWriteOnlyRocksDB is enabled.
+     * For old offsets (in File CQ range), read from File CQ; for new offsets (in RocksDB CQ), read from RocksDB CQ.
+     */
+    private AbstractConsumeQueueStore selectReadStoreByOffset(String topic, int queueId, long offset) {
+        // Check if topic is in grayscale list
+        boolean isGrayscaleTopic = messageStoreConfig.isTopicInGrayscaleList(topic);
+        
+        // If topic is not in grayscale list, use currentReadStore
+        if (!isGrayscaleTopic) {
+            return currentReadStore;
+        }
+
+        // If only one store is loaded, use it
+        if (innerConsumeQueueStoreList.size() == 1) {
+            return innerConsumeQueueStoreList.getFirst();
+        }
+
+        // Try to get File CQ max offset as the cutoff point
+        if (consumeQueueStore != null && rocksDBConsumeQueueStore != null) {
+            try {
+                long fileCQMaxOffset = consumeQueueStore.getMaxOffset(topic, queueId);
+                // If offset is within File CQ range, read from File CQ
+                if (offset < fileCQMaxOffset) {
+                    return consumeQueueStore;
+                }
+                // Otherwise, read from RocksDB CQ
+                return rocksDBConsumeQueueStore;
+            } catch (Exception e) {
+                log.warn("Failed to determine read store by offset, topic={}, queueId={}, offset={}, fallback to currentReadStore",
+                    topic, queueId, offset, e);
+                return currentReadStore;
+            }
+        }
+
+        return currentReadStore;
+    }
+
+    /**
+     * Find or create consume queue, with optional offset for routing when combineCQWriteOnlyRocksDB is enabled.
+     */
+    public ConsumeQueueInterface findOrCreateConsumeQueue(String topic, int queueId, long offset) {
+        if (messageStoreConfig.isCombineCQWriteOnlyRocksDB()) {
+            AbstractConsumeQueueStore selectedStore = selectReadStoreByOffset(topic, queueId, offset);
+            return selectedStore.findOrCreateConsumeQueue(topic, queueId);
+        }
+        return currentReadStore.findOrCreateConsumeQueue(topic, queueId);
     }
 
     @Override
     public ConsumeQueueInterface findOrCreateConsumeQueue(String topic, int queueId) {
+        // When combineCQWriteOnlyRocksDB is enabled but no offset provided, use currentReadStore
+        // The actual routing will happen when offset is known (e.g., in getMessage)
         return currentReadStore.findOrCreateConsumeQueue(topic, queueId);
     }
 
@@ -552,5 +676,138 @@ public class CombineConsumeQueueStore implements ConsumeQueueStoreInterface {
             default:
                 return null;
         }
+    }
+
+    /**
+     * Get CQ offset route information for monitoring.
+     *
+     * @param requestTopic topic name to check, null means all topics
+     * @return CQOffsetRouteInfo containing offset ranges and routing information
+     */
+    public CQOffsetRouteInfo getCQOffsetRouteInfo(String requestTopic) {
+        CQOffsetRouteInfo result = new CQOffsetRouteInfo();
+        Map<String, CQOffsetRouteInfo.TopicCQOffsetRouteInfo> topicRouteInfoMap = new java.util.HashMap<>();
+
+        try {
+            // Get all topics from currentReadStore
+            ConcurrentMap<String, ConcurrentMap<Integer, ConsumeQueueInterface>> cqTable = currentReadStore.getConsumeQueueTable();
+            
+            for (Map.Entry<String, ConcurrentMap<Integer, ConsumeQueueInterface>> topicEntry : cqTable.entrySet()) {
+                String topic = topicEntry.getKey();
+                
+                // Filter by requestTopic if specified
+                if (requestTopic != null && !requestTopic.equals(topic)) {
+                    continue;
+                }
+
+                boolean isGrayscaleTopic = messageStoreConfig.isTopicInGrayscaleList(topic);
+                CQOffsetRouteInfo.TopicCQOffsetRouteInfo topicInfo = new CQOffsetRouteInfo.TopicCQOffsetRouteInfo();
+                topicInfo.setTopic(topic);
+                topicInfo.setInGrayscaleList(isGrayscaleTopic);
+
+                // Get topic-level offset range (min of all queues, max of all queues)
+                long fileCQMinOffset = Long.MAX_VALUE;
+                long fileCQMaxOffset = -1;
+                long kvCQMinOffset = Long.MAX_VALUE;
+                long kvCQMaxOffset = -1;
+
+                ConcurrentMap<Integer, ConsumeQueueInterface> topicQueueMap = topicEntry.getValue();
+                for (Integer queueId : topicQueueMap.keySet()) {
+                    // Get File CQ offset range for this queue
+                    if (consumeQueueStore != null) {
+                        try {
+                            long qFileMin = consumeQueueStore.getMinOffsetInQueue(topic, queueId);
+                            if (qFileMin >= 0 && qFileMin < fileCQMinOffset) {
+                                fileCQMinOffset = qFileMin;
+                            }
+                            Long qFileMax = consumeQueueStore.getMaxOffset(topic, queueId);
+                            if (qFileMax != null && qFileMax > fileCQMaxOffset) {
+                                fileCQMaxOffset = qFileMax;
+                            }
+                        } catch (Exception e) {
+                            log.warn("Failed to get File CQ offset range for topic={}, queueId={}", topic, queueId, e);
+                        }
+                    }
+
+                    // Get KV CQ offset range for this queue
+                    if (rocksDBConsumeQueueStore != null) {
+                        try {
+                            long qKvMin = rocksDBConsumeQueueStore.getMinOffsetInQueue(topic, queueId);
+                            if (qKvMin >= 0 && qKvMin < kvCQMinOffset) {
+                                kvCQMinOffset = qKvMin;
+                            }
+                            Long qKvMax = rocksDBConsumeQueueStore.getMaxOffset(topic, queueId);
+                            if (qKvMax != null && qKvMax > kvCQMaxOffset) {
+                                kvCQMaxOffset = qKvMax;
+                            }
+                        } catch (Exception e) {
+                            log.warn("Failed to get KV CQ offset range for topic={}, queueId={}", topic, queueId, e);
+                        }
+                    }
+                }
+
+                // Normalize values
+                if (fileCQMinOffset == Long.MAX_VALUE) fileCQMinOffset = -1;
+                if (kvCQMinOffset == Long.MAX_VALUE) kvCQMinOffset = -1;
+
+                topicInfo.setFileCQMinOffset(fileCQMinOffset);
+                topicInfo.setFileCQMaxOffset(fileCQMaxOffset);
+                topicInfo.setKvCQMinOffset(kvCQMinOffset);
+                topicInfo.setKvCQMaxOffset(kvCQMaxOffset);
+                topicInfo.setRouteCutoffOffset(fileCQMaxOffset); // File CQ maxOffset is the cutoff point
+
+                // Get queue-level information if topic is specified
+                if (requestTopic != null) {
+                    Map<Integer, CQOffsetRouteInfo.QueueCQOffsetRouteInfo> queueInfoMap = new java.util.HashMap<>();
+                    
+                    for (Map.Entry<Integer, ConsumeQueueInterface> queueEntry : topicQueueMap.entrySet()) {
+                        int queueId = queueEntry.getKey();
+                        CQOffsetRouteInfo.QueueCQOffsetRouteInfo queueInfo = new CQOffsetRouteInfo.QueueCQOffsetRouteInfo();
+                        queueInfo.setQueueId(queueId);
+
+                        long qFileCQMinOffset = -1;
+                        long qFileCQMaxOffset = -1;
+                        long qKvCQMinOffset = -1;
+                        long qKvCQMaxOffset = -1;
+
+                        if (consumeQueueStore != null) {
+                            try {
+                                qFileCQMinOffset = consumeQueueStore.getMinOffsetInQueue(topic, queueId);
+                                Long qFileMax = consumeQueueStore.getMaxOffset(topic, queueId);
+                                qFileCQMaxOffset = qFileMax != null ? qFileMax : -1;
+                            } catch (Exception e) {
+                                log.warn("Failed to get File CQ offset range for topic={}, queueId={}", topic, queueId, e);
+                            }
+                        }
+
+                        if (rocksDBConsumeQueueStore != null) {
+                            try {
+                                qKvCQMinOffset = rocksDBConsumeQueueStore.getMinOffsetInQueue(topic, queueId);
+                                Long qKvMax = rocksDBConsumeQueueStore.getMaxOffset(topic, queueId);
+                                qKvCQMaxOffset = qKvMax != null ? qKvMax : -1;
+                            } catch (Exception e) {
+                                log.warn("Failed to get KV CQ offset range for topic={}, queueId={}", topic, queueId, e);
+                            }
+                        }
+
+                        queueInfo.setFileCQMinOffset(qFileCQMinOffset);
+                        queueInfo.setFileCQMaxOffset(qFileCQMaxOffset);
+                        queueInfo.setKvCQMinOffset(qKvCQMinOffset);
+                        queueInfo.setKvCQMaxOffset(qKvCQMaxOffset);
+                        queueInfo.setRouteCutoffOffset(qFileCQMaxOffset);
+
+                        queueInfoMap.put(queueId, queueInfo);
+                    }
+                    topicInfo.setQueueRouteInfoMap(queueInfoMap);
+                }
+
+                topicRouteInfoMap.put(topic, topicInfo);
+            }
+        } catch (Exception e) {
+            log.error("Failed to get CQ offset route info", e);
+        }
+
+        result.setTopicRouteInfoMap(topicRouteInfoMap);
+        return result;
     }
 }

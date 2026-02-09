@@ -76,6 +76,7 @@ import org.apache.rocketmq.broker.topic.TopicQueueMappingManager;
 import org.apache.rocketmq.broker.transaction.queue.TransactionalMessageUtil;
 import org.apache.rocketmq.common.BrokerConfig;
 import org.apache.rocketmq.common.CheckRocksdbCqWriteResult;
+import org.apache.rocketmq.common.CQOffsetRouteInfo;
 import org.apache.rocketmq.common.KeyBuilder;
 import org.apache.rocketmq.common.LockCallback;
 import org.apache.rocketmq.common.MQVersion;
@@ -150,6 +151,7 @@ import org.apache.rocketmq.remoting.protocol.body.TopicList;
 import org.apache.rocketmq.remoting.protocol.body.UnlockBatchRequestBody;
 import org.apache.rocketmq.remoting.protocol.body.UserInfo;
 import org.apache.rocketmq.remoting.protocol.header.CheckRocksdbCqWriteProgressRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.CheckCQOffsetRouteRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.CloneGroupOffsetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.ConsumeMessageDirectlyResultRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.CreateAclRequestHeader;
@@ -362,6 +364,8 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
                 return queryConsumeQueue(ctx, request);
             case RequestCode.CHECK_ROCKSDB_CQ_WRITE_PROGRESS:
                 return this.checkRocksdbCqWriteProgress(ctx, request);
+            case RequestCode.CHECK_CQ_OFFSET_ROUTE:
+                return this.checkCQOffsetRoute(ctx, request);
             case RequestCode.EXPORT_ROCKSDB_CONFIG_TO_JSON:
                 return this.exportRocksDBConfigToJson(ctx, request);
             case RequestCode.UPDATE_AND_GET_GROUP_FORBIDDEN:
@@ -3423,6 +3427,36 @@ public class AdminBrokerProcessor implements NettyRequestProcessor {
 
         return ((CombineConsumeQueueStore) consumeQueueStore).
             doCheckCqWriteProgress(requestHeader.getTopic(), requestHeader.getCheckStoreTime(), StoreType.DEFAULT, StoreType.DEFAULT_ROCKSDB);
+    }
+
+    private RemotingCommand checkCQOffsetRoute(ChannelHandlerContext ctx, RemotingCommand request) {
+        final RemotingCommand response = RemotingCommand.createResponseCommand(null);
+        try {
+            CheckCQOffsetRouteRequestHeader requestHeader = request.decodeCommandCustomHeader(CheckCQOffsetRouteRequestHeader.class);
+            MessageStore messageStore = brokerController.getMessageStore();
+            DefaultMessageStore defaultMessageStore;
+            if (messageStore instanceof AbstractPluginMessageStore) {
+                defaultMessageStore = (DefaultMessageStore) ((AbstractPluginMessageStore) messageStore).getNext();
+            } else {
+                defaultMessageStore = (DefaultMessageStore) messageStore;
+            }
+            ConsumeQueueStoreInterface consumeQueueStore = defaultMessageStore.getQueueStore();
+
+            if (!(consumeQueueStore instanceof CombineConsumeQueueStore)) {
+                response.setCode(ResponseCode.SYSTEM_ERROR);
+                response.setRemark("It is not CombineConsumeQueueStore, no need check");
+                return response;
+            }
+
+            CQOffsetRouteInfo routeInfo = ((CombineConsumeQueueStore) consumeQueueStore).getCQOffsetRouteInfo(requestHeader.getTopic());
+            response.setCode(ResponseCode.SUCCESS);
+            response.setBody(JSON.toJSONBytes(routeInfo));
+        } catch (Exception e) {
+            LOGGER.error("checkCQOffsetRoute error", e);
+            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setRemark(e.getMessage());
+        }
+        return response;
     }
 
     private RemotingCommand transferPopToFsStore(ChannelHandlerContext ctx, RemotingCommand request) {

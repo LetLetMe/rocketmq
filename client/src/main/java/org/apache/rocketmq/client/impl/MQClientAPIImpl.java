@@ -62,6 +62,7 @@ import org.apache.rocketmq.client.producer.SendStatus;
 import org.apache.rocketmq.client.rpchook.NamespaceRpcHook;
 import org.apache.rocketmq.common.BoundaryType;
 import org.apache.rocketmq.common.CheckRocksdbCqWriteResult;
+import org.apache.rocketmq.common.CQOffsetRouteInfo;
 import org.apache.rocketmq.common.MQVersion;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.ObjectCreator;
@@ -3188,6 +3189,19 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
         assert response != null;
         if (ResponseCode.SUCCESS == response.getCode()) {
             return JSON.parseObject(response.getBody(), CheckRocksdbCqWriteResult.class);
+        }
+        throw new MQClientException(response.getCode(), response.getRemark());
+    }
+
+    public CQOffsetRouteInfo checkCQOffsetRoute(final String brokerAddr, final String topic, final long timeoutMillis) throws InterruptedException,
+        RemotingTimeoutException, RemotingSendRequestException, RemotingConnectException, MQClientException {
+        org.apache.rocketmq.remoting.protocol.header.CheckCQOffsetRouteRequestHeader header = new org.apache.rocketmq.remoting.protocol.header.CheckCQOffsetRouteRequestHeader();
+        header.setTopic(topic);
+        RemotingCommand request = RemotingCommand.createRequestCommand(org.apache.rocketmq.remoting.protocol.RequestCode.CHECK_CQ_OFFSET_ROUTE, header);
+        RemotingCommand response = this.remotingClient.invokeSync(brokerAddr, request, timeoutMillis);
+        assert response != null;
+        if (ResponseCode.SUCCESS == response.getCode()) {
+            return JSON.parseObject(response.getBody(), CQOffsetRouteInfo.class);
         }
         throw new MQClientException(response.getCode(), response.getRemark());
     }

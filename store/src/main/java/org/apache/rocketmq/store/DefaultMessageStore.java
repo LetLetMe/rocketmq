@@ -868,7 +868,7 @@ public class DefaultMessageStore implements MessageStore {
 
         final long maxOffsetPy = this.commitLog.getMaxOffset();
 
-        ConsumeQueueInterface consumeQueue = findConsumeQueue(topic, queueId);
+        ConsumeQueueInterface consumeQueue = findConsumeQueue(topic, queueId, offset);
         if (consumeQueue != null) {
             minOffset = consumeQueue.getMinOffsetInQueue();
             maxOffset = consumeQueue.getMaxOffsetInQueue();
@@ -1273,7 +1273,8 @@ public class DefaultMessageStore implements MessageStore {
 
     @Override
     public long getMessageStoreTimeStamp(String topic, int queueId, long consumeQueueOffset) {
-        ConsumeQueueInterface logicQueue = this.getConsumeQueue(topic, queueId);
+        // Use findConsumeQueue with offset to support routing for grayscale topics
+        ConsumeQueueInterface logicQueue = this.findConsumeQueue(topic, queueId, consumeQueueOffset);
         if (logicQueue != null) {
             Pair<CqUnit, Long> pair = logicQueue.getCqUnitAndStoreTime(consumeQueueOffset);
             if (pair != null && pair.getObject2() != null) {
@@ -1784,6 +1785,17 @@ public class DefaultMessageStore implements MessageStore {
 
     @Override
     public ConsumeQueueInterface findConsumeQueue(String topic, int queueId) {
+        return this.consumeQueueStore.findOrCreateConsumeQueue(topic, queueId);
+    }
+
+    /**
+     * Find consume queue with offset for routing when combineCQWriteOnlyRocksDB is enabled.
+     * This allows routing to File CQ for old offsets and RocksDB CQ for new offsets.
+     */
+    public ConsumeQueueInterface findConsumeQueue(String topic, int queueId, long offset) {
+        if (this.consumeQueueStore instanceof CombineConsumeQueueStore) {
+            return ((CombineConsumeQueueStore) this.consumeQueueStore).findOrCreateConsumeQueue(topic, queueId, offset);
+        }
         return this.consumeQueueStore.findOrCreateConsumeQueue(topic, queueId);
     }
 
